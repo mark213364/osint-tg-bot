@@ -1,11 +1,21 @@
 {
   "name": "osint-tg-bot",
   "version": "1.0.0",
+  "description": "OSINT Telegram bot on Cloudflare Workers",
   "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "cf-typegen": "wrangler types"
+  },
   "dependencies": {
-    "grammy": "^1.30.0"
+    "grammy": "^1.30.0",
+    "libphonenumber-js": "^1.11.0"
   },
   "devDependencies": {
-    "wrangler": "^4.0.0"
+    "wrangler": "^4.0.0",
+    "@cloudflare/workers-types": "^4.20241127.0",
+    "typescript": "^5.7.0"
   }
 }
