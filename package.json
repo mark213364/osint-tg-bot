@@ -1,0 +1,11 @@
+{
+  "name": "osint-tg-bot",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "grammy": "^1.30.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
