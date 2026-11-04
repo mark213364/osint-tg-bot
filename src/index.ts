@@ -1,100 +1,70 @@
-import { Bot, webhookCallback, Context } from "grammy";
+import { parsePhoneNumber } from 'libphonenumber-js';
 
-export interface Env {
-  BOT_TOKEN: string;
-  HIBP_KEY?: string;
+bot.command("phone", async (ctx) => {
+  const raw = ctx.match?.trim();
+  if (!raw) return ctx.reply("Формат: /phone +79991234567");
+
+  // 1. ЛОКАЛЬНАЯ ПРОВЕРКА (квота не тратится)
+  let phone;
+  try {
+    phone = parsePhoneNumber(raw);
+    if (!phone.isValid()) {
+      return ctx.reply("❌ Номер невалиден. Проверьте формат.");
+    }
+  } catch {
+    return ctx.reply("❌ Не удалось распознать номер.");
+  }
+
+  const e164 = phone.number; // например +79991234567
+  const cacheKey = `phone:${e164}`;
+
+  // 2. ПРОВЕРКА КЭША (квота не тратится)
+  const cached = await env.OSINT_KV.get(cacheKey, "json");
+  if (cached) {
+    return ctx.reply(formatPhoneReport(cached), { parse_mode: "HTML" });
+  }
+
+  // 3. ЗАПРОС К API (тратит 1 из 100)
+  await ctx.reply("🔎 Запрашиваю данные...");
+  
+  try {
+    const res = await fetch(
+      `https://api.numlookupapi.com/v1/validate/${encodeURIComponent(e164)}`,
+      { headers: { apikey: env.NUMLOOKUP_KEY } }
+    );
+    
+    if (!res.ok) {
+      return ctx.reply("❌ API временно недоступен или квота исчерпана.");
+    }
+    
+    const data = await res.json();
+    
+    // Сохраняем в кэш на 30 дней, чтобы не тратить квоту повторно
+    await env.OSINT_KV.put(cacheKey, JSON.stringify(data), {
+      expirationTtl: 60 * 60 * 24 * 30,
+    });
+    
+    return ctx.reply(formatPhoneReport(data), { parse_mode: "HTML" });
+    
+  } catch (e) {
+    console.error(e);
+    return ctx.reply("❌ Ошибка при запросе к API.");
+  }
+});
+
+// Функция форматирования ответа в нужном вам виде
+function formatPhoneReport(data: any): string {
+  return [
+    `📞 <b>Номер:</b> ${data.international_format || data.e164_format || data.number || "—"}`,
+    `🌍 <b>Страна:</b> ${data.country_name || "—"}`,
+    `📍 <b>Регион/Город:</b> ${data.location || "—"}`,
+    `📡 <b>Оператор:</b> ${data.carrier || "—"}`,
+    `📱 <b>Тип линии:</b> ${data.line_type || "—"}`,
+    `🕐 <b>Часовой пояс:</b> ${(data.timezones || []).join(", ") || "—"}`,
+    ``,
+    `👤 <b>Аккаунты в соцсетях:</b>`,
+    `<i>Автоматическая проверка недоступна. Используйте ссылки ниже для ручного поиска.</i>`,
+    ``,
+    `🔗 <a href="https://www.google.com/search?q='${data.e164_format || data.number}'">Google</a> | <a href="https://www.truecaller.com/search/${(data.number || "").replace('+','')}">Truecaller</a>`,
+  ].join("\n");
 }
-
-export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const bot = new Bot(env.BOT_TOKEN);
-
-    bot.command("start", async (ctx: Context) => {
-      await ctx.reply(
-        "👋 <b>OSINT-бот</b>\n\n" +
-        "/email user@example.com — проверка email\n" +
-        "/phone +79991234567 — информация о номере\n\n" +
-        "⚠️ Только открытые данные.",
-        { parse_mode: "HTML" }
-      );
-    });
-
-    bot.command("email", async (ctx: Context) => {
-      const email = ctx.match?.trim();
-      if (!email || !email.includes("@")) {
-        return ctx.reply("Формат: /email user@example.com");
-      }
-
-      await ctx.reply("🔎 Проверяю...");
-      const lines = [`📧 <b>${email}</b>`];
-
-      // Проверка MX через Cloudflare DNS
-      try {
-        const domain = email.split("@")[1];
-        const res = await fetch(`https://cloudflare-dns.com/dns-query?name=${domain}&type=MX`, {
-          headers: { Accept: "application/dns-json" },
-        });
-        const data: any = await res.json();
-        const hasMx = (data.Answer ?? []).some((r: any) => r.type === 15);
-        lines.push(`MX-записи: ${hasMx ? "✅ есть" : "❌ нет"}`);
-      } catch {
-        lines.push("MX-записи: ⚠️ ошибка");
-      }
-
-      // HIBP (если ключ задан)
-      if (env.HIBP_KEY) {
-        try {
-          const res = await fetch(
-            `https://haveibeenpwned.com/api/v3/breachedaccount/${encodeURIComponent(email)}?truncateResponse=true`,
-            { headers: { "hibp-api-key": env.HIBP_KEY, "User-Agent": "OSINT-Bot" } }
-          );
-          if (res.status === 200) {
-            const breaches = await res.json();
-            lines.push(`⚠️ Утечки: ${breaches.map((b: any) => b.Name).join(", ")}`);
-          } else if (res.status === 404) {
-            lines.push("✅ В утечках не найден");
-          }
-        } catch {
-          lines.push("⚠️ Ошибка HIBP");
-        }
-      }
-
-      await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
-    });
-
-    bot.command("phone", async (ctx: Context) => {
-      const raw = ctx.match?.trim();
-      if (!raw) return ctx.reply("Формат: /phone +79991234567");
-
-      let clean = raw.replace(/[^\d+]/g, "");
-      if (clean.startsWith("8") && clean.length === 11) clean = "+7" + clean.slice(1);
-      if (clean.startsWith("7") && clean.length === 11) clean = "+" + clean;
-
-      if (!clean.startsWith("+7") || clean.length !== 12) {
-        return ctx.reply("❌ Пока поддержка только РФ (+7/8XXXXXXXXXX)");
-      }
-
-      const def = clean.slice(2, 5);
-      const ops: Record<string, string> = {
-        "900": "Билайн", "901": "Билайн", "902": "Билайн", "903": "Билайн", "904": "Билайн",
-        "905": "Билайн", "906": "Билайн", "908": "Билайн", "909": "Билайн",
-        "910": "МТС", "911": "МТС", "912": "МТС", "913": "МТС", "914": "МТС",
-        "915": "МТС", "916": "МТС", "917": "МТС", "918": "МТС", "919": "МТС",
-        "920": "МегаФон", "921": "МегаФон", "922": "МегаФон", "923": "МегаФон",
-        "924": "МегаФон", "925": "МегаФон", "926": "МегаФон", "927": "МегаФон",
-        "928": "МегаФон", "929": "МегаФон",
-        "930": "Tele2", "931": "Tele2", "932": "Tele2", "933": "Tele2",
-        "934": "Tele2", "935": "Tele2", "936": "Tele2", "937": "Tele2",
-        "938": "Tele2", "939": "Tele2",
-      };
-
-      await ctx.reply(
-        `📞 <b>+7 (${def}) ...</b>\nОператор: ${ops[def] || "неизвестен"}\nРегион: РФ`,
-        { parse_mode: "HTML" }
-      );
-    });
-
-    // Обработка вебхука для Cloudflare
-    return webhookCallback(bot, "cloudflare-mod")(request);
-  },
-};
